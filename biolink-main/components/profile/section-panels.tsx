@@ -2,7 +2,7 @@
 
 import { RobloxWidget } from "./widgets/roblox";
 import { LanyardWidget } from "./widgets/lanyard";
-import type { WidgetGlass } from "./widgets/glass";
+import { glassPanelStyle, type WidgetGlass } from "./widgets/glass";
 
 export type ProfileSection = {
   id: string;
@@ -26,15 +26,7 @@ export function AboutSectionPanel({
   return (
     <div
       className="box-border w-full max-w-full overflow-hidden rounded-2xl border border-white/10 bg-black/55 p-4 text-left backdrop-blur-md"
-      style={
-        glass
-          ? {
-              backgroundColor: glass.backgroundColor,
-              borderColor: glass.borderColor,
-              backdropFilter: glass.backdropFilter,
-            }
-          : undefined
-      }
+      style={glass ? glassPanelStyle(glass) : undefined}
     >
       <h2 className="m-0 mb-3 break-words text-center text-[20px] font-semibold tracking-tight text-white">
         {title || "about me"}
