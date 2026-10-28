@@ -3,84 +3,81 @@ import { getSession } from "@/lib/auth";
 import { db, ensureProfileSchema } from "@/lib/db";
 import { profiles } from "@/lib/schema";
 import { eq } from "drizzle-orm";
+import { createHash, createHmac, randomUUID } from "crypto";
 
-const KIM_API_KEY = process.env.KIM_API_KEY;
-const KIM_BASE_URL = process.env.KIM_BASE_URL || "https://zzz.cried.online";
+const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
+const R2_BUCKET = process.env.R2_BUCKET;
+// Public base URL of the bucket (r2.dev URL or your custom domain), no trailing slash.
+const R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL ?? "").replace(/\/+$/, "");
 
 type UploadType = "avatar" | "background" | "banner" | "cursor" | "video" | "audio";
 
-function extractUploadedUrl(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const root = payload as Record<string, unknown>;
-  const data = root.data;
-  if (data && typeof data === "object") {
-    const d = data as Record<string, unknown>;
-    if (d.file && typeof d.file === "object") {
-      const file = d.file as Record<string, unknown>;
-      if (typeof file.url === "string" && file.url) return file.url;
-    }
-    if (typeof d.url === "string" && d.url) return d.url;
-  }
-  if (typeof root.url === "string" && root.url) return root.url;
-  return null;
-}
+const sha256Hex = (data: string | Buffer) =>
+  createHash("sha256").update(data).digest("hex");
+const hmac = (key: string | Buffer, data: string) =>
+  createHmac("sha256", key).update(data).digest();
 
-async function uploadToKim(file: File, safeName: string): Promise<string> {
-  if (!KIM_API_KEY) throw new Error("NO_KIM");
-  const response = await fetch(`${KIM_BASE_URL}/v1/upload`, {
-    method: "POST",
+/** Uploads a file to Cloudflare R2 (signed S3 request, no extra packages) and returns the public URL. */
+async function uploadToR2(file: File, safeName: string): Promise<string> {
+  const accessKey = process.env.R2_ACCESS_KEY_ID;
+  const secretKey = process.env.R2_SECRET_ACCESS_KEY;
+  if (!R2_ACCOUNT_ID || !R2_BUCKET || !R2_PUBLIC_URL || !accessKey || !secretKey) {
+    throw new Error("Upload storage is not configured.");
+  }
+
+  const ext =
+    (safeName.split(".").pop() || "bin")
+      .replace(/[^a-zA-Z0-9]/g, "")
+      .toLowerCase()
+      .slice(0, 8) || "bin";
+  const key = `uploads/${randomUUID()}.${ext}`;
+  const body = Buffer.from(await file.arrayBuffer());
+
+  const host = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const path = `/${R2_BUCKET}/${key}`;
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = sha256Hex(body);
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  const canonicalRequest = [
+    "PUT",
+    path,
+    "",
+    `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`,
+    signedHeaders,
+    payloadHash,
+  ].join("\n");
+  const scope = `${dateStamp}/auto/s3/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    scope,
+    sha256Hex(canonicalRequest),
+  ].join("\n");
+  const signingKey = hmac(
+    hmac(hmac(hmac(`AWS4${secretKey}`, dateStamp), "auto"), "s3"),
+    "aws4_request"
+  );
+  const signature = createHmac("sha256", signingKey)
+    .update(stringToSign)
+    .digest("hex");
+
+  const response = await fetch(`https://${host}${path}`, {
+    method: "PUT",
     headers: {
-      "x-kim-api-key": KIM_API_KEY,
-      "x-kim-mode": "moe",
-      "x-kim-visibility": "public",
-      "x-filename": safeName,
+      Authorization: `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      "x-amz-date": amzDate,
+      "x-amz-content-sha256": payloadHash,
       "Content-Type": file.type || "application/octet-stream",
     },
-    body: file,
+    body,
   });
-
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    let message = `Storage provider rejected the upload (${response.status}).`;
-    try {
-      const errorData = JSON.parse(text) as {
-        error?: { message?: string } | string;
-      };
-      const detail =
-        typeof errorData?.error === "string"
-          ? errorData.error
-          : errorData?.error?.message;
-      if (detail) message = `Storage provider: ${detail}`;
-    } catch {
-      if (text) message = `Storage provider (${response.status}): ${text.slice(0, 200)}`;
-    }
-    throw new Error(message);
+    const detail = (await response.text()).slice(0, 160);
+    throw new Error(`R2 upload failed (${response.status}): ${detail}`);
   }
 
-  const result = await response.json().catch(() => null);
-  const url = extractUploadedUrl(result);
-  if (!url) throw new Error("Unexpected response from storage provider");
-  return url;
-}
-
-/** Public fallback host when KIM_API_KEY is not set. */
-async function uploadToCatbox(file: File, safeName: string): Promise<string> {
-  const form = new FormData();
-  form.append("reqtype", "fileupload");
-  form.append("fileToUpload", file, safeName);
-  const response = await fetch("https://catbox.moe/user/api.php", {
-    method: "POST",
-    body: form,
-  });
-  const text = (await response.text()).trim();
-  if (!response.ok || !/^https?:\/\//i.test(text)) {
-    throw new Error(
-      text
-        ? `Fallback storage failed: ${text.slice(0, 160)}`
-        : "Fallback storage failed."
-    );
-  }
-  return text;
+  return `${R2_PUBLIC_URL}/${key}`;
 }
 
 async function persistProfileAsset(
@@ -168,19 +165,7 @@ export async function POST(req: Request) {
     "upload";
 
   try {
-    let url: string;
-    try {
-      url = await uploadToKim(file, safeName);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Fall back when KIM is missing or rejects the request.
-      if (msg === "NO_KIM" || /rejected|401|403|Storage provider/i.test(msg)) {
-        console.warn("KIM upload failed, trying catbox fallback:", msg);
-        url = await uploadToCatbox(file, safeName);
-      } else {
-        throw err;
-      }
-    }
+    const url = await uploadToR2(file, safeName);
 
     try {
       await persistProfileAsset(session.id, normalizedType, url);
