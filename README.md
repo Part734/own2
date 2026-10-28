@@ -34,7 +34,7 @@ If you want daily updates, polls, sneak peeks etc. just join the discord server 
 | Database | [Neon Postgres](https://neon.tech) (serverless) |
 | ORM | [Drizzle ORM](https://orm.drizzle.team) |
 | Auth | [jose](https://github.com/panva/jose) (JWT) |
-| (file) Uploads | [Catbox](https://catbox.moe) |
+| (file) Uploads | [Cloudflare R2](https://developers.cloudflare.com/r2/) |
 | Passwords | [bcryptjs](https://github.com/nicolo-ribaudo/bcryptjs) |
 | Icons | [Font Awesome](https://fontawesome.com) (React) |
 | Effects | [noise-gradient-bg](https://www.npmjs.com/package/noise-gradient-bg) |
