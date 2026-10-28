@@ -88,22 +88,20 @@ export async function collectStatus(): Promise<SiteStatus> {
   }
 
   // 3. Upload storage (avatars, backgrounds, custom icons)
-  if (process.env.KIM_API_KEY) {
-    components.push({
-      name: "uploads",
-      label: "Uploads",
-      status: "operational",
-      message: "Upload storage is configured",
-    });
-  } else {
-    components.push({
-      name: "uploads",
-      label: "Uploads",
-      status: "down",
-      message:
-        "KIM_API_KEY is missing — avatar, background and icon uploads will fail",
-    });
-  }
+  const r2Configured =
+    process.env.R2_ACCOUNT_ID &&
+    process.env.R2_ACCESS_KEY_ID &&
+    process.env.R2_SECRET_ACCESS_KEY &&
+    process.env.R2_BUCKET &&
+    process.env.R2_PUBLIC_URL;
+  components.push({
+    name: "uploads",
+    label: "Uploads",
+    status: r2Configured ? "operational" : "down",
+    message: r2Configured
+      ? "Uploads are served through Cloudflare R2"
+      : "R2 storage env vars are missing — uploads will fail",
+  });
 
   const issues = components.filter((component) => component.status === "down");
   const status: "ok" | "down" = issues.length === 0 ? "ok" : "down";
